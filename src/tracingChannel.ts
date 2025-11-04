@@ -95,6 +95,8 @@ class TracingChannel<ContextType extends object = object> {
           const newContext = trace.setSpan(otelContext.active(), result);
           (data as ContextWithSpanContext<ContextType>).__otelSpanContext =
             newContext;
+        } else {
+          debugLog('⚠️  Start handler returned a non-span value, context may not be propagated.');
         }
 
         return result;
