@@ -13,6 +13,10 @@ import {
 import { prepChannel } from './prepChannel';
 import { isSpan, debugLog } from './utils';
 
+// Partial subscribers type - all handlers are optional
+export type PartialTracingChannelSubscribers<ContextType extends object> =
+  Partial<TracingChannelSubscribers<ContextType>>;
+
 // Extended context type that includes our injected span context
 type ContextWithSpanContext<T extends object> = T & {
   __otelSpanContext?: Context;
@@ -81,7 +85,7 @@ class TracingChannel<ContextType extends object = object> {
    *
    * 🔥 Enhanced: If the start handler returns a span, automatically inject _spanContext
    */
-  subscribe(subscribers: TracingChannelSubscribers<ContextType>): void {
+  subscribe(subscribers: PartialTracingChannelSubscribers<ContextType>): void {
     const wrappedSubscribers = { ...subscribers };
 
     // Wrap the start handler to auto-inject _spanContext if a span is returned
@@ -103,14 +107,20 @@ class TracingChannel<ContextType extends object = object> {
       };
     }
 
-    this._channel.subscribe(wrappedSubscribers);
+    this._channel.subscribe(
+      wrappedSubscribers as TracingChannelSubscribers<ContextType>,
+    );
   }
 
   /**
    * Unsubscribe from tracing channel events
    */
-  unsubscribe(subscribers: TracingChannelSubscribers<ContextType>): void {
-    this._channel.unsubscribe(subscribers);
+  unsubscribe(
+    subscribers: PartialTracingChannelSubscribers<ContextType>,
+  ): void {
+    this._channel.unsubscribe(
+      subscribers as TracingChannelSubscribers<ContextType>,
+    );
   }
 
   /**
