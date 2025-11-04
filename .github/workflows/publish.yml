@@ -1,14 +1,21 @@
 name: Publish to npm
 
+# Version bump options:
+# - as-is: Publish current version in package.json (no bump)
+# - patch: Bug fixes (0.1.0 → 0.1.1)
+# - minor: New features (0.1.0 → 0.2.0)
+# - major: Breaking changes (0.1.0 → 1.0.0)
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version bump type (patch, minor, major) or explicit version'
+        description: 'Version bump type'
         required: true
         default: 'patch'
         type: choice
         options:
+          - as-is
           - patch
           - minor
           - major
@@ -51,16 +58,31 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          pnpm version ${{ github.event.inputs.version }} --no-git-tag-version
-          NEW_VERSION=$(node -p "require('./package.json').version")
+
+          if [ "${{ github.event.inputs.version }}" = "as-is" ]; then
+            echo "Using version from package.json (as-is)"
+            NEW_VERSION=$(node -p "require('./package.json').version")
+          else
+            echo "Bumping version: ${{ github.event.inputs.version }}"
+            pnpm version ${{ github.event.inputs.version }} --no-git-tag-version
+            NEW_VERSION=$(node -p "require('./package.json').version")
+          fi
+
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "Publishing version: $NEW_VERSION"
 
       - name: Publish to npm with provenance
         run: pnpm publish --no-git-checks --provenance --access public
 
       - name: Create git tag
         run: |
-          git add package.json
-          git commit -m "chore: release v${{ env.NEW_VERSION }}"
+          # Only commit package.json if it was modified (not as-is)
+          if git diff --quiet package.json; then
+            echo "No changes to package.json (as-is mode)"
+          else
+            git add package.json
+            git commit -m "chore: release v${{ env.NEW_VERSION }}"
+          fi
+
           git tag "v${{ env.NEW_VERSION }}"
           git push origin main --tags
