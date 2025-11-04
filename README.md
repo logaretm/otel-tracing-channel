@@ -90,6 +90,19 @@ setDebugFlag(true); // Enable debug logs
 setDebugFlag(false); // Disable debug logs
 ```
 
+## Publishing
+
+This package uses [npm Trusted Publishers](https://docs.npmjs.com/generating-provenance-statements#using-third-party-package-publishing-tools) with GitHub Actions. No npm tokens required!
+
+**Version Options:**
+
+- `as-is` - Publish current version in package.json (no auto-bump)
+- `patch` - Bug fixes (0.1.0 → 0.1.1)
+- `minor` - New features (0.1.0 → 0.2.0)
+- `major` - Breaking changes (0.1.0 → 1.0.0)
+
+You can manually edit `package.json` version and use `as-is`, or let the workflow bump it automatically.
+
 ## License
 
 Apache-2.0
