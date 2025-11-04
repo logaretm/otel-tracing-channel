@@ -22,8 +22,8 @@
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cts"
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
       },
       "require": {
         "types": "./dist/index.d.cjs",
@@ -34,14 +34,18 @@
   },
   "scripts": {
     "build": "tsdown",
+    "lint": "oxlint --type-aware ./",
     "dev": "tsdown --watch",
     "test": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm lint && pnpm build"
   },
   "devDependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@types/node": "^24.9.1",
     "bumpp": "^10.3.1",
+    "oxlint": "^1.25.0",
+    "oxlint-tsgolint": "^0.4.0",
     "prettier": "^3.6.2",
     "tsdown": "^0.15.9",
     "typescript": "^5.9.3",
