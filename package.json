@@ -1,6 +1,6 @@
 {
   "name": "otel-tracing-channel",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "A fixed wrapper around Node.js's tracingChannel that properly propagates otel context",
   "type": "module",
   "license": "Apache-2.0",
