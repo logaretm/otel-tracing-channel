@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "A fixed wrapper around Node.js's tracingChannel that properly propagates otel context",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "homepage": "https://github.com/logaretm/otel-tracing-channel#readme",
   "bugs": {
     "url": "https://github.com/logaretm/otel-tracing-channel/issues"
