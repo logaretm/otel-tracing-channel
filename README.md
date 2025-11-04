@@ -4,15 +4,27 @@ A thin wrapper around Node.js's `tracingChannel` that properly propagates OpenTe
 
 ## The Problem
 
-Node.js's native `tracingChannel` loses OpenTelemetry context between the `start` event and the callback execution. This breaks distributed tracing when using diagnostic channels.
+Node.js's native `tracingChannel` seems to lose the OpenTelemetry context between the `start` event and the callback execution. This breaks some aspects of distributed tracing when using diagnostic channels.
+
+While creating spans is fine with the current API, the parent-child relationship between spans is broken and the traces/spans gets created as siblings rather than children which can paint a misleading picture about what is going on for end users.
+
+I'm not sure if this is a bug in the runtime itself or could be a misunderstanding of the tracing channel purpose. But all I know is `tracePromise` and `traceSync` cannot be used to propagate the span context correctly throughout the execution.
+
+I have built (vibed) a couple of minimal reproductions in https://github.com/logaretm/node-playground/tree/tracing-ch-spans one with plain OTEL and one with plain Node.js API.
 
 ## The Solution
+
+I thought if this indeed a problem with tracing channel implementation then it could be fixed with a similar implementation. From my tests it was possible as long as you can get the initial async storage instance you want to propagate, for OTEL it's the active context storage.
+
+Regardless if this is an issue or not, this package makes it possible for OTEL purposes to use tracing channels.
 
 This package fixes context propagation by:
 
 - Capturing the OpenTelemetry context from spans returned in start handlers
 - Running callbacks within the captured context
-- Maintaining compatibility with Node.js's native `TracingChannel` API with minor improvements
+- Maintaining compatibility with Node.js's native `TracingChannel` API with minor adjustments for flexibility
+
+I tried to make this package as thin as possible to allow 3rd party libraries to use it if they want to have a safe OTEL propagation in tracing channels until we figure out what is going on there.
 
 ## Installation
 
@@ -21,6 +33,8 @@ npm install otel-tracing-channel
 ```
 
 ## Usage
+
+The key part is to return an OTEL `Span` implementation in the `start` channel handler, once you do that it will be kept active throughout until the `asyncEnd` or `end` are called.
 
 ```ts
 import { tracingChannel } from 'otel-tracing-channel';
