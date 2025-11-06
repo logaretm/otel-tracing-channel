@@ -14,7 +14,6 @@ This package solves the problem by binding OpenTelemetry's internal `AsyncLocalS
 
 - The OpenTelemetry context is automatically propagated throughout the traced operation
 - Parent-child span relationships are maintained correctly
-- The solution is minimal and non-intrusive
 
 ## Installation
 
@@ -31,19 +30,18 @@ import { tracingChannel } from 'otel-tracing-channel';
 import { trace } from '@opentelemetry/api';
 
 // Create a channel with a transform function that creates your span
-const channel = tracingChannel(
-  'my-operation',
-  (data) => {
-    // Create and return a span from the channel data
-    const span = trace.getTracer('my-app').startSpan('my-operation', {
-      attributes: {
-        userId: data.userId,
-        // ... other attributes from data
-      }
-    });
-    return span;
-  }
-);
+const channel = tracingChannel('my-operation', (data) => {
+  // Create and return a span from the channel data
+  const span = trace.getTracer('my-app').startSpan('my-operation', {
+    attributes: {
+      userId: data.userId,
+      // ... other attributes from data
+    },
+  });
+
+  // Return OTEL Span
+  return span;
+});
 
 // Subscribe to events to handle span lifecycle
 channel.subscribe({
@@ -54,14 +52,16 @@ channel.subscribe({
   error(data) {
     data.span?.recordException(data.error);
     data.span?.end();
-  }
+  },
 });
 
-// Use it - context is automatically propagated!
-await channel.tracePromise(async () => {
-  // Your async work - OpenTelemetry context is properly propagated
-  await doSomething();
-}, { userId: '123' });
+await channel.tracePromise(
+  async () => {
+    // Your async work - OpenTelemetry context is properly propagated
+    await doSomething();
+  },
+  { userId: '123' },
+);
 ```
 
 ### With Sentry
@@ -70,27 +70,24 @@ await channel.tracePromise(async () => {
 import { tracingChannel } from 'otel-tracing-channel';
 import * as Sentry from '@sentry/node';
 
-const channel = tracingChannel(
-  'database:query',
-  (data) => {
-    return Sentry.startSpanManual(
-      {
-        name: 'db.query',
-        op: 'db',
-        attributes: {
-          'db.statement': data.query,
-          'db.system': 'postgresql'
-        }
+const channel = tracingChannel('database:query', (data) => {
+  return Sentry.startSpanManual(
+    {
+      name: 'db.query',
+      op: 'db',
+      attributes: {
+        'db.statement': data.query,
+        'db.system': 'postgresql',
       },
-      (span) => span
-    );
-  }
-);
+    },
+    (span) => span,
+  );
+});
 
 channel.subscribe({
   asyncEnd: (data) => {
     data.span?.end();
-  }
+  },
 });
 
 // Execute with automatic context propagation
@@ -98,7 +95,7 @@ await channel.tracePromise(
   async () => {
     return await db.query('SELECT * FROM users');
   },
-  { query: 'SELECT * FROM users' }
+  { query: 'SELECT * FROM users' },
 );
 ```
 
@@ -111,9 +108,8 @@ import { tracingChannel as nativeTracingChannel } from 'node:diagnostics_channel
 import { tracingChannel } from 'otel-tracing-channel';
 
 const existingChannel = nativeTracingChannel('my-channel');
-const wrappedChannel = tracingChannel(
-  existingChannel,
-  (data) => createMySpan(data)
+const wrappedChannel = tracingChannel(existingChannel, (data) =>
+  createMySpan(data),
 );
 ```
 
@@ -124,12 +120,14 @@ const wrappedChannel = tracingChannel(
 Creates or wraps a tracing channel with OpenTelemetry context propagation.
 
 **Parameters:**
+
 - `channelNameOrInstance`: Either a string channel name or an existing `TracingChannel` instance
 - `transformStart`: A function that receives the channel data and returns an OpenTelemetry `Span`
 
 **Returns:** A `TracingChannel` instance with OTel context binding
 
 The `transformStart` function is called during the `start` event and:
+
 - Receives the channel data as its parameter
 - Should create and return an OpenTelemetry `Span`
 - The returned span is automatically stored on `data.span` for access in event handlers
@@ -175,6 +173,7 @@ setDebugFlag(false); // Disable debug logs
 ```
 
 Debug logs will show:
+
 - Whether OpenTelemetry AsyncLocalStorage was found
 - When spans are created in the transform
 - When context is stored in AsyncLocalStorage
@@ -196,6 +195,7 @@ This ensures the OpenTelemetry context (and your span) is active throughout the 
 ## Graceful Degradation
 
 If OpenTelemetry context is not available (e.g., no SDK initialized), the library:
+
 - Logs a debug message (if debug logging is enabled)
 - Returns the channel without OTel binding
 - The channel still works normally, just without automatic context propagation
@@ -210,13 +210,10 @@ interface QueryData {
   params: any[];
 }
 
-const channel = tracingChannel<QueryData>(
-  'db:query',
-  (data) => {
-    // data is typed as QueryData
-    return createSpan(data.query, data.params);
-  }
-);
+const channel = tracingChannel<QueryData>('db:query', (data) => {
+  // data is typed as QueryData
+  return createSpan(data.query, data.params);
+});
 ```
 
 ## Publishing
