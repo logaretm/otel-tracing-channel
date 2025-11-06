@@ -8,6 +8,8 @@ import { debugLog, isSpan } from './utils';
  */
 export type TracingChannelTransform<TData = any> = (data: TData) => Span;
 
+type WithSpan<TData = any> = TData & { span?: Span };
+
 /**
  * Creates a new tracing channel with proper context propagation
  *
@@ -49,11 +51,13 @@ export type TracingChannelTransform<TData = any> = (data: TData) => Span;
 export function tracingChannel<TData extends object = any>(
   channelNameOrInstance: string | TracingChannel<TData, TData>,
   transformStart: TracingChannelTransform<TData>,
-): TracingChannel<TData, TData> {
+): TracingChannel<WithSpan<TData>, WithSpan<TData>> {
   // Get or create the channel
   const channel =
     typeof channelNameOrInstance === 'string'
-      ? nativeTracingChannel<TData, TData>(channelNameOrInstance)
+      ? nativeTracingChannel<WithSpan<TData>, WithSpan<TData>>(
+          channelNameOrInstance,
+        )
       : channelNameOrInstance;
 
   try {
@@ -71,7 +75,7 @@ export function tracingChannel<TData extends object = any>(
 
     // Bind the start channel with the transform
     // @ts-ignore - bindStore types don't account for AsyncLocalStorage of different type
-    channel.start.bindStore(otelStorage, (data: TData) => {
+    channel.start.bindStore(otelStorage, (data: WithSpan<TData>) => {
       debugLog('Creating span in bindStore transform');
 
       // Call the user's transform to create the span
@@ -85,7 +89,7 @@ export function tracingChannel<TData extends object = any>(
       }
 
       // Store the span on data so event handlers can access it
-      (data as any).span = span;
+      data.span = span;
 
       // Wrap the span in a context and return it
       // This is what gets stored in AsyncLocalStorage
