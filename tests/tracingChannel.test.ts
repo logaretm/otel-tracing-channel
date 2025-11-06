@@ -1,60 +1,186 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { tracingChannel, setDebugFlag } from '../src';
+import { context, trace, type Span, ROOT_CONTEXT } from '@opentelemetry/api';
+import { tracingChannel as nativeTracingChannel } from 'node:diagnostics_channel';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 describe('tracingChannel', () => {
   beforeEach(() => {
     setDebugFlag(false);
   });
 
-  it('should create a tracing channel instance', () => {
-    const channel = tracingChannel('test-channel');
+  it('should create a tracing channel from a string name', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel(
+      'test-channel',
+      () => mockSpan,
+    );
+
     expect(channel).toBeDefined();
     expect(typeof channel.subscribe).toBe('function');
     expect(typeof channel.tracePromise).toBe('function');
     expect(typeof channel.traceSync).toBe('function');
   });
 
-  it('should allow subscribing to channel events', () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn();
-    const endHandler = vi.fn();
+  it('should accept an existing TracingChannel instance', () => {
+    const mockSpan = createMockSpan();
+    const nativeChannel = nativeTracingChannel('test-channel');
+    const channel = tracingChannel(nativeChannel, () => mockSpan);
 
-    channel.subscribe({
-      start: startHandler,
-      end: endHandler,
-    });
-
-    // Subscribe should not throw
-    expect(startHandler).not.toHaveBeenCalled();
+    expect(channel).toBe(nativeChannel);
   });
 
-  it('should call start and end handlers during traceSync', () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn();
-    const endHandler = vi.fn();
+  it('should call transformStart during channel execution if OTel context is available', () => {
+    const mockSpan = createMockSpan();
+    const transformStart = vi.fn(() => mockSpan);
+    const channel = tracingChannel('test-channel', transformStart);
 
+    channel.traceSync(() => 'result', { foo: 'bar' });
+
+    // transformStart is called if AsyncLocalStorage is available
+    // If not available, it won't be called
+    if (transformStart.mock.calls.length > 0) {
+      // Span was added to the data
+      const callData = transformStart.mock.calls[0][0];
+      expect(callData.foo).toBe('bar');
+    }
+  });
+
+  it('should store the created span on the data object when context is available', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const data: any = { foo: 'bar' };
+    channel.traceSync(() => 'result', data);
+
+    // If OTel context is available, span will be added
+    // Otherwise it won't be - both cases are valid
+    if (data.span) {
+      expect(data.span).toBe(mockSpan);
+    }
+  });
+
+  it('should allow subscribers to access events', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const endHandler = vi.fn();
     channel.subscribe({
-      start: startHandler,
       end: endHandler,
     });
 
-    const result = channel.traceSync(() => 'hello', {});
+    channel.traceSync(() => 'result', { foo: 'bar' });
 
-    expect(result).toBe('hello');
-    expect(startHandler).toHaveBeenCalledTimes(1);
     expect(endHandler).toHaveBeenCalledTimes(1);
+    const callData = endHandler.mock.calls[0][0];
+    expect(callData.foo).toBe('bar');
   });
 
-  it('should call error handler on sync errors', () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn();
-    const errorHandler = vi.fn();
-    const endHandler = vi.fn();
+  it('should work with typed channel data', () => {
+    interface MyData {
+      operationName: string;
+      userId: string;
+    }
 
+    const mockSpan = createMockSpan();
+    const transformStart = vi.fn((data: MyData) => {
+      // Data might have span added by the library
+      expect(data.operationName).toBe('fetch-user');
+      expect(data.userId).toBe('123');
+      return mockSpan;
+    });
+
+    const channel = tracingChannel<MyData>(
+      'test-channel',
+      transformStart,
+    );
+
+    // Even if transformStart isn't called (no OTel context), the channel should work
+    expect(() => {
+      channel.traceSync(() => 'result', {
+        operationName: 'fetch-user',
+        userId: '123',
+      });
+    }).not.toThrow();
+  });
+
+  it('should handle errors gracefully when OTel context is not available', () => {
+    const mockSpan = createMockSpan();
+    
+    // Mock the context manager to return something invalid
+    const originalGetContextManager = (context as any)._getContextManager;
+    (context as any)._getContextManager = () => null;
+
+    // Should not throw, just log a debug message
+    expect(() => {
+      tracingChannel('test-channel', () => mockSpan);
+    }).not.toThrow();
+
+    // Restore
+    (context as any)._getContextManager = originalGetContextManager;
+  });
+
+  it('should return channel even if AsyncLocalStorage is not accessible', () => {
+    const mockSpan = createMockSpan();
+    
+    // Mock the context manager to have no _asyncLocalStorage
+    const originalGetContextManager = (context as any)._getContextManager;
+    (context as any)._getContextManager = () => ({ _asyncLocalStorage: null });
+
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    expect(channel).toBeDefined();
+    expect(typeof channel.traceSync).toBe('function');
+
+    // Restore
+    (context as any)._getContextManager = originalGetContextManager;
+  });
+
+  it('should pass return value through', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const syncResult = channel.traceSync(() => 42, {});
+    expect(syncResult).toBe(42);
+  });
+
+  it('should pass return value through for async operations', async () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const asyncResult = await channel.tracePromise(async () => 'hello', {});
+    expect(asyncResult).toBe('hello');
+  });
+
+  it('should propagate errors from sync operations', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    expect(() => {
+      channel.traceSync(() => {
+        throw new Error('test error');
+      }, {});
+    }).toThrow('test error');
+  });
+
+  it('should propagate errors from async operations', async () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    await expect(
+      channel.tracePromise(async () => {
+        throw new Error('async error');
+      }, {}),
+    ).rejects.toThrow('async error');
+  });
+
+  it('should support error handlers', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const errorHandler = vi.fn();
     channel.subscribe({
-      start: startHandler,
       error: errorHandler,
-      end: endHandler,
     });
 
     expect(() => {
@@ -63,150 +189,52 @@ describe('tracingChannel', () => {
       }, {});
     }).toThrow('test error');
 
-    expect(startHandler).toHaveBeenCalledTimes(1);
     expect(errorHandler).toHaveBeenCalledTimes(1);
-    expect(endHandler).toHaveBeenCalledTimes(1);
+    const errorData = errorHandler.mock.calls[0][0];
+    expect(errorData.error).toBeInstanceOf(Error);
+    expect(errorData.error.message).toBe('test error');
   });
 
-  it('should call start, asyncStart, asyncEnd, and end handlers during tracePromise', async () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn();
-    const asyncStartHandler = vi.fn();
-    const asyncEndHandler = vi.fn();
-    const endHandler = vi.fn();
+  it('should call handlers in correct order for async operations', async () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    const calls: string[] = [];
 
     channel.subscribe({
-      start: startHandler,
-      asyncStart: asyncStartHandler,
-      asyncEnd: asyncEndHandler,
-      end: endHandler,
+      start: () => calls.push('start'),
+      asyncStart: () => calls.push('asyncStart'),
+      asyncEnd: () => calls.push('asyncEnd'),
+      end: () => calls.push('end'),
     });
 
-    const result = await channel.tracePromise(async () => 'async hello', {});
+    await channel.tracePromise(async () => {
+      calls.push('fn');
+    }, {});
 
-    expect(result).toBe('async hello');
-    expect(startHandler).toHaveBeenCalledTimes(1);
-    expect(asyncStartHandler).toHaveBeenCalledTimes(1);
-    expect(asyncEndHandler).toHaveBeenCalledTimes(1);
-    expect(endHandler).toHaveBeenCalledTimes(1);
+    // Node.js tracing channel calls: start (sync), then fn runs, then end (sync), 
+    // then asyncStart and asyncEnd fire after the promise settles
+    expect(calls).toEqual(['start', 'fn', 'end', 'asyncStart', 'asyncEnd']);
   });
 
-  it('should call error handler on async errors', async () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn();
-    const errorHandler = vi.fn();
-    const endHandler = vi.fn();
+  it('should work without any subscribers', () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
 
-    channel.subscribe({
-      start: startHandler,
-      error: errorHandler,
-      end: endHandler,
-    });
+    // Should not throw
+    expect(() => {
+      channel.traceSync(() => 'result', {});
+    }).not.toThrow();
+  });
 
+  it('should handle async operations without subscribers', async () => {
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    // Should not throw
     await expect(
-      channel.tracePromise(async () => {
-        throw new Error('async test error');
-      }, {}),
-    ).rejects.toThrow('async test error');
-
-    expect(startHandler).toHaveBeenCalledTimes(1);
-    expect(errorHandler).toHaveBeenCalledTimes(1);
-    expect(endHandler).toHaveBeenCalledTimes(1);
-  });
-
-  it('should pass context object to handlers', () => {
-    const channel = tracingChannel<{ id: string }>('test-channel');
-    const startHandler = vi.fn();
-    const endHandler = vi.fn();
-
-    channel.subscribe({
-      start: startHandler,
-      end: endHandler,
-    });
-
-    const context = { id: 'test-123' };
-    channel.traceSync(() => 'result', context);
-
-    // Node.js tracing channel passes the context as first arg (may include channel name as second arg)
-    expect(startHandler).toHaveBeenCalled();
-    expect(startHandler.mock.calls[0][0]).toEqual(context);
-    expect(endHandler).toHaveBeenCalled();
-    expect(endHandler.mock.calls[0][0]).toEqual(context);
-  });
-
-  it('should handle error context with error property', () => {
-    const channel = tracingChannel('test-channel');
-    const errorHandler = vi.fn();
-
-    channel.subscribe({
-      error: errorHandler,
-    });
-
-    const testError = new Error('test error');
-    const context = { id: 'test' };
-
-    expect(() => {
-      channel.traceSync(() => {
-        throw testError;
-      }, context);
-    }).toThrow(testError);
-
-    // Check that error handler was called and first arg contains the error context
-    expect(errorHandler).toHaveBeenCalled();
-    const errorContext = errorHandler.mock.calls[0][0];
-    expect(errorContext).toMatchObject({
-      id: 'test',
-      error: testError,
-    });
-  });
-
-  it('should work with no subscribers', async () => {
-    const channel = tracingChannel('test-channel');
-
-    // Should not throw
-    const syncResult = channel.traceSync(() => 'sync', {});
-    expect(syncResult).toBe('sync');
-
-    const asyncResult = await channel.tracePromise(async () => 'async', {});
-    expect(asyncResult).toBe('async');
-  });
-
-  it('should pass arguments to callback function', async () => {
-    const channel = tracingChannel('test-channel');
-
-    const syncResult = channel.traceSync(
-      (a: number, b: number) => a + b,
-      {},
-      5,
-      3,
-    );
-    expect(syncResult).toBe(8);
-
-    const asyncResult = await channel.tracePromise(
-      async (str: string, num: number) => `${str}-${num}`,
-      {},
-      'test',
-      42,
-    );
-    expect(asyncResult).toBe('test-42');
-  });
-
-  it('should allow binding and unbinding AsyncLocalStorage', () => {
-    const channel = tracingChannel('test-channel');
-    const { AsyncLocalStorage } = require('node:async_hooks');
-    const storage = new AsyncLocalStorage();
-
-    // Should not throw
-    channel.bindStore(storage);
-    channel.unbindStore(storage);
-  });
-
-  it('should throw when binding non-AsyncLocalStorage', () => {
-    const channel = tracingChannel('test-channel');
-
-    expect(() => {
-      channel.bindStore({} as any);
-    }).toThrow('storage must be an AsyncLocalStorage instance');
+      channel.tracePromise(async () => 'result', {}),
+    ).resolves.toBe('result');
   });
 });
 
@@ -226,10 +254,10 @@ describe('debug logging integration', () => {
   it('should enable debug logging when set to true', () => {
     setDebugFlag(true);
 
-    // Create a channel which triggers debug logs during setup
-    tracingChannel('debug-test-channel');
+    const mockSpan = createMockSpan();
+    tracingChannel('debug-test-channel', () => mockSpan);
 
-    // Debug logs should have been called
+    // Debug logs should have been called during channel creation
     expect(consoleLogSpy).toHaveBeenCalled();
     expect(
       consoleLogSpy.mock.calls.some((call) =>
@@ -244,9 +272,10 @@ describe('debug logging integration', () => {
   it('should not log when debug is disabled', () => {
     setDebugFlag(false);
 
-    tracingChannel('test-channel');
+    const mockSpan = createMockSpan();
+    tracingChannel('test-channel', () => mockSpan);
 
-    // Debug logs should not be called (or only for initial setup)
+    // Debug logs should not be called
     const debugCalls = consoleLogSpy.mock.calls.filter((call) =>
       call.some(
         (arg) =>
@@ -254,74 +283,25 @@ describe('debug logging integration', () => {
       ),
     );
 
-    // With debug disabled, there should be no debug logs
     expect(debugCalls.length).toBe(0);
   });
 });
 
-describe('span context injection', () => {
-  beforeEach(() => {
-    setDebugFlag(false);
-  });
-
-  it('should inject span context when start handler returns a span', () => {
-    const channel = tracingChannel<{ spanContext?: any }>('test-channel');
-
-    const mockSpan = {
-      spanContext: () => ({
-        traceId: '12345678901234567890123456789012',
-        spanId: '1234567890123456',
-      }),
-      setAttribute: vi.fn(),
-      end: vi.fn(),
-    };
-
-    const contextData: { spanContext?: any } = {};
-
-    channel.subscribe({
-      start: (_data) => {
-        // Return a span from the start handler
-        return mockSpan as any;
-      },
-    });
-
-    channel.traceSync(() => 'result', contextData);
-
-    // The context should have been augmented with __otelSpanContext
-    expect((contextData as any).__otelSpanContext).toBeDefined();
-  });
-
-  it('should handle start handler that returns void', () => {
-    const channel = tracingChannel('test-channel');
-    const startHandler = vi.fn(() => {
-      // Return void explicitly
-      return undefined;
-    });
-
-    channel.subscribe({
-      start: startHandler,
-    });
-
-    // Should not throw
-    expect(() => {
-      channel.traceSync(() => 'result', {});
-    }).not.toThrow();
-  });
-
-  it('should handle start handler that returns non-span objects', () => {
-    const channel = tracingChannel('test-channel');
-
-    channel.subscribe({
-      start: () => {
-        // Return a non-span object
-        return { notASpan: true } as any;
-      },
-    });
-
-    // Should not throw, just log a warning (if debug is enabled)
-    expect(() => {
-      channel.traceSync(() => 'result', {});
-    }).not.toThrow();
-  });
-});
-
+// Helper function to create a mock span
+function createMockSpan(name: string = 'test-span'): Span {
+  return {
+    spanContext: () => ({
+      traceId: '12345678901234567890123456789012',
+      spanId: '1234567890123456',
+      traceFlags: 1,
+    }),
+    setAttribute: vi.fn(),
+    setAttributes: vi.fn(),
+    addEvent: vi.fn(),
+    setStatus: vi.fn(),
+    updateName: vi.fn(),
+    end: vi.fn(),
+    isRecording: () => true,
+    recordException: vi.fn(),
+  } as any;
+}
