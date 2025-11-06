@@ -1,5 +1,28 @@
 # otel-tracing-channel
 
+⚠️ Not needed if u can use `bindStore` and return the active context in the transform function, this repo was meant to verify the context propagation behavior and I mostly confused myself with the investigation.
+
+```js
+const diagnostics_channel = require('node:diagnostics_channel');
+const { AsyncLocalStorage } = require('node:async_hooks');
+
+const channels = diagnostics_channel.tracingChannel('my-channel');
+const myStore = new AsyncLocalStorage();
+
+// The start channel sets the initial store data to something
+// and stores that store data value on the trace context object
+channels.start.bindStore(myStore, (data) => {
+  const span = new Span(data);
+  data.span = span;
+  return span;
+});
+
+// Then asyncStart can restore from that data it stored previously
+channels.asyncStart.bindStore(myStore, (data) => {
+  return data.span;
+});
+```
+
 A thin wrapper around Node.js's `tracingChannel` that properly propagates OpenTelemetry context.
 
 ## The Problem
