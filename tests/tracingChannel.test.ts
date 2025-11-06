@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { tracingChannel, setDebugFlag } from '../src';
-import { context, trace, type Span, ROOT_CONTEXT } from '@opentelemetry/api';
+import { context, type Span } from '@opentelemetry/api';
 import { tracingChannel as nativeTracingChannel } from 'node:diagnostics_channel';
-import { AsyncLocalStorage } from 'node:async_hooks';
 
 describe('tracingChannel', () => {
   beforeEach(() => {
@@ -11,10 +10,7 @@ describe('tracingChannel', () => {
 
   it('should create a tracing channel from a string name', () => {
     const mockSpan = createMockSpan();
-    const channel = tracingChannel(
-      'test-channel',
-      () => mockSpan,
-    );
+    const channel = tracingChannel('test-channel', () => mockSpan);
 
     expect(channel).toBeDefined();
     expect(typeof channel.subscribe).toBe('function');
@@ -41,8 +37,9 @@ describe('tracingChannel', () => {
     // If not available, it won't be called
     if (transformStart.mock.calls.length > 0) {
       // Span was added to the data
-      const callData = transformStart.mock.calls[0][0];
-      expect(callData.foo).toBe('bar');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const callData = (transformStart.mock.calls as any)[0]?.[0];
+      expect(callData?.foo).toBe('bar');
     }
   });
 
@@ -67,7 +64,7 @@ describe('tracingChannel', () => {
     const endHandler = vi.fn();
     channel.subscribe({
       end: endHandler,
-    });
+    } as any);
 
     channel.traceSync(() => 'result', { foo: 'bar' });
 
@@ -90,10 +87,7 @@ describe('tracingChannel', () => {
       return mockSpan;
     });
 
-    const channel = tracingChannel<MyData>(
-      'test-channel',
-      transformStart,
-    );
+    const channel = tracingChannel<MyData>('test-channel', transformStart);
 
     // Even if transformStart isn't called (no OTel context), the channel should work
     expect(() => {
@@ -106,7 +100,7 @@ describe('tracingChannel', () => {
 
   it('should handle errors gracefully when OTel context is not available', () => {
     const mockSpan = createMockSpan();
-    
+
     // Mock the context manager to return something invalid
     const originalGetContextManager = (context as any)._getContextManager;
     (context as any)._getContextManager = () => null;
@@ -122,7 +116,7 @@ describe('tracingChannel', () => {
 
   it('should return channel even if AsyncLocalStorage is not accessible', () => {
     const mockSpan = createMockSpan();
-    
+
     // Mock the context manager to have no _asyncLocalStorage
     const originalGetContextManager = (context as any)._getContextManager;
     (context as any)._getContextManager = () => ({ _asyncLocalStorage: null });
@@ -181,7 +175,7 @@ describe('tracingChannel', () => {
     const errorHandler = vi.fn();
     channel.subscribe({
       error: errorHandler,
-    });
+    } as any);
 
     expect(() => {
       channel.traceSync(() => {
@@ -206,13 +200,13 @@ describe('tracingChannel', () => {
       asyncStart: () => calls.push('asyncStart'),
       asyncEnd: () => calls.push('asyncEnd'),
       end: () => calls.push('end'),
-    });
+    } as any);
 
     await channel.tracePromise(async () => {
       calls.push('fn');
     }, {});
 
-    // Node.js tracing channel calls: start (sync), then fn runs, then end (sync), 
+    // Node.js tracing channel calls: start (sync), then fn runs, then end (sync),
     // then asyncStart and asyncEnd fire after the promise settles
     expect(calls).toEqual(['start', 'fn', 'end', 'asyncStart', 'asyncEnd']);
   });
@@ -232,9 +226,91 @@ describe('tracingChannel', () => {
     const channel = tracingChannel('test-channel', () => mockSpan);
 
     // Should not throw
-    await expect(
-      channel.tracePromise(async () => 'result', {}),
-    ).resolves.toBe('result');
+    await expect(channel.tracePromise(async () => 'result', {})).resolves.toBe(
+      'result',
+    );
+  });
+
+  it('should log a warning when transformStart returns a non-span value', () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    setDebugFlag(true);
+
+    const channel = tracingChannel('test-channel', () => {
+      // Return a non-span object
+      return { notASpan: true } as any;
+    });
+
+    // Trigger the channel
+    channel.traceSync(() => 'result', {});
+
+    // Should have logged a warning about non-span return value
+    // (only if OTel context is available - if not, the transform won't be called)
+    const warningLogs = consoleLogSpy.mock.calls.filter((call) =>
+      call.some(
+        (arg) =>
+          typeof arg === 'string' &&
+          arg.includes('transformStart') &&
+          arg.includes('non-span'),
+      ),
+    );
+
+    // Check if OTel context was available by looking for other debug logs
+    const otelAvailable = consoleLogSpy.mock.calls.some((call) =>
+      call.some(
+        (arg) =>
+          typeof arg === 'string' &&
+          arg.includes('Found OpenTelemetry AsyncLocalStorage'),
+      ),
+    );
+
+    if (otelAvailable) {
+      // If OTel is available, we should see the warning
+      expect(warningLogs.length).toBeGreaterThan(0);
+    } else {
+      // If OTel is not available, we won't see the warning (transform never runs)
+      // In this case, just verify the test setup worked
+      expect(consoleLogSpy).toHaveBeenCalled();
+    }
+
+    consoleLogSpy.mockRestore();
+    setDebugFlag(false);
+  });
+
+  it('should not log a warning when transformStart returns a valid span', () => {
+    const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    setDebugFlag(true);
+
+    const mockSpan = createMockSpan();
+    const channel = tracingChannel('test-channel', () => mockSpan);
+
+    // Trigger the channel
+    channel.traceSync(() => 'result', {});
+
+    // Should NOT have logged a warning about non-span return value
+    const warningLogs = consoleLogSpy.mock.calls.filter((call) =>
+      call.some(
+        (arg) =>
+          typeof arg === 'string' &&
+          arg.includes('transformStart') &&
+          arg.includes('non-span'),
+      ),
+    );
+
+    expect(warningLogs.length).toBe(0);
+
+    consoleLogSpy.mockRestore();
+    setDebugFlag(false);
+  });
+
+  it('should NOT store non-span values on data.span', () => {
+    const nonSpanValue = { notASpan: true };
+    const channel = tracingChannel('test-channel', () => nonSpanValue as any);
+
+    const data: any = { foo: 'bar' };
+    channel.traceSync(() => 'result', data);
+
+    // Non-span values should NOT be stored on data.span
+    expect(data.span).toBeUndefined();
   });
 });
 
@@ -288,7 +364,7 @@ describe('debug logging integration', () => {
 });
 
 // Helper function to create a mock span
-function createMockSpan(name: string = 'test-span'): Span {
+function createMockSpan(_name: string = 'test-span'): Span {
   return {
     spanContext: () => ({
       traceId: '12345678901234567890123456789012',

@@ -1,7 +1,7 @@
 import { tracingChannel as nativeTracingChannel } from 'node:diagnostics_channel';
 import type { TracingChannel } from 'node:diagnostics_channel';
 import { context, trace, type Span } from '@opentelemetry/api';
-import { debugLog } from './utils';
+import { debugLog, isSpan } from './utils';
 
 /**
  * Transform function that creates a span from the channel data
@@ -76,6 +76,13 @@ export function tracingChannel<TData extends object = any>(
 
       // Call the user's transform to create the span
       const span = transformStart(data);
+      if (!isSpan(span)) {
+        debugLog(
+          `"transformStart" returned a non-span value, this may break child span relationship`,
+        );
+        // Return the current context without modification
+        return context.active();
+      }
 
       // Store the span on data so event handlers can access it
       (data as any).span = span;
